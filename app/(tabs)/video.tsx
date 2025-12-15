@@ -1,7 +1,7 @@
 import VideoPlayer from '@/components/VideoPlayer';
 import { Ionicons } from '@expo/vector-icons';
-import { useVideoPlayer, VideoView } from 'expo-video';
-import React, { useState } from 'react';
+import { useVideoPlayer, VideoSource, VideoView } from 'expo-video';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
     SafeAreaView,
     ScrollView,
@@ -10,9 +10,18 @@ import {
     TouchableOpacity,
     View,
 } from 'react-native';
+import { useDownloadedVideos } from '@/hooks/useDownloadedVideos';
+
+type VideoItem = {
+    id: string | number;
+    title: string;
+    description: string;
+    source: VideoSource;
+    isDownloaded?: boolean;
+};
 
 // Local video sources from assets/videos folder
-const VIDEO_SOURCES = [
+const BUILT_IN_VIDEOS: VideoItem[] = [
     {
         id: 1,
         title: 'Firdavs',
@@ -28,7 +37,37 @@ const VIDEO_SOURCES = [
 ];
 
 export default function VideoPlayerScreen() {
-    const [selectedVideo, setSelectedVideo] = useState(VIDEO_SOURCES[0]);
+    const { videos: downloadedVideos } = useDownloadedVideos();
+
+    const downloadedVideoItems = useMemo<VideoItem[]>(() => {
+        return downloadedVideos.map((video) => ({
+            id: video.id,
+            title: video.filename,
+            description: 'Downloaded video',
+            source: video.uri,
+            isDownloaded: true,
+        }));
+    }, [downloadedVideos]);
+
+    const allVideos = useMemo<VideoItem[]>(() => {
+        return [...downloadedVideoItems, ...BUILT_IN_VIDEOS];
+    }, [downloadedVideoItems]);
+
+    const [selectedVideo, setSelectedVideo] = useState<VideoItem>(
+        allVideos[0] ?? BUILT_IN_VIDEOS[0]
+    );
+
+    useEffect(() => {
+        if (!allVideos.length) {
+            return;
+        }
+
+        const exists = allVideos.find((video) => video.id === selectedVideo.id);
+        if (!exists) {
+            setSelectedVideo(allVideos[0]);
+        }
+    }, [allVideos, selectedVideo]);
+
     const player = useVideoPlayer(selectedVideo.source, (player) => {
         player.loop = true;
         player.muted = false;
@@ -85,46 +124,34 @@ export default function VideoPlayerScreen() {
                 {/* Video Selection */}
                 <View style={styles.selectionCard}>
                     <Text style={styles.selectionTitle}>Choose a Video</Text>
-                    <View style={styles.videoList}>
-                        {VIDEO_SOURCES.map((video) => (
-                            <TouchableOpacity
-                                key={video.id}
-                                style={[
-                                    styles.videoItem,
-                                    selectedVideo.id === video.id && styles.videoItemActive,
-                                ]}
-                                onPress={() => setSelectedVideo(video)}
-                            >
-                                <View style={styles.videoItemIcon}>
-                                    <Ionicons
-                                        name={
-                                            selectedVideo.id === video.id
-                                                ? 'play-circle'
-                                                : 'play-circle-outline'
-                                        }
-                                        size={24}
-                                        color={selectedVideo.id === video.id ? '#6366f1' : '#666'}
-                                    />
-                                </View>
-                                <View style={styles.videoItemText}>
-                                    <Text
-                                        style={[
-                                            styles.videoItemTitle,
-                                            selectedVideo.id === video.id &&
-                                            styles.videoItemTitleActive,
-                                        ]}
-                                    >
-                                        {video.title}
-                                    </Text>
-                                    <Text style={styles.videoItemDescription}>
-                                        {video.description}
-                                    </Text>
-                                </View>
-                                {selectedVideo.id === video.id && (
-                                    <View style={styles.activeIndicator} />
-                                )}
-                            </TouchableOpacity>
-                        ))}
+                    {downloadedVideoItems.length > 0 ? (
+                        <View style={styles.section}>
+                            <Text style={styles.sectionLabel}>
+                                Downloaded ({downloadedVideoItems.length})
+                            </Text>
+                            <View style={styles.videoList}>
+                                {downloadedVideoItems.map((video) => renderVideoItem({
+                                    video,
+                                    selectedVideo,
+                                    onSelect: setSelectedVideo,
+                                }))}
+                            </View>
+                        </View>
+                    ) : (
+                        <Text style={styles.emptyText}>
+                            No downloaded videos yet. Use the Download tab to save a file.
+                        </Text>
+                    )}
+
+                    <View style={styles.section}>
+                        <Text style={styles.sectionLabel}>Built-in demos</Text>
+                        <View style={styles.videoList}>
+                            {BUILT_IN_VIDEOS.map((video) => renderVideoItem({
+                                video,
+                                selectedVideo,
+                                onSelect: setSelectedVideo,
+                            }))}
+                        </View>
                     </View>
                 </View>
 
@@ -160,6 +187,54 @@ function FeatureItem({ icon, text }: { icon: any; text: string }) {
             </View>
             <Text style={styles.featureText}>{text}</Text>
         </View>
+    );
+}
+
+function renderVideoItem({
+    video,
+    selectedVideo,
+    onSelect,
+}: {
+    video: VideoItem;
+    selectedVideo: VideoItem;
+    onSelect: (video: VideoItem) => void;
+}) {
+    const isActive = selectedVideo.id === video.id;
+    return (
+        <TouchableOpacity
+            key={video.id}
+            style={[styles.videoItem, isActive && styles.videoItemActive]}
+            onPress={() => onSelect(video)}
+        >
+            <View style={styles.videoItemIcon}>
+                <Ionicons
+                    name={isActive ? 'play-circle' : 'play-circle-outline'}
+                    size={24}
+                    color={isActive ? '#6366f1' : '#666'}
+                />
+            </View>
+            <View style={styles.videoItemText}>
+                <Text
+                    style={[
+                        styles.videoItemTitle,
+                        isActive && styles.videoItemTitleActive,
+                    ]}
+                >
+                    {video.title}
+                </Text>
+                <View style={styles.videoItemMeta}>
+                    <Text style={styles.videoItemDescription}>
+                        {video.description}
+                    </Text>
+                    {video.isDownloaded && (
+                        <View style={styles.tag}>
+                            <Text style={styles.tagText}>Downloaded</Text>
+                        </View>
+                    )}
+                </View>
+            </View>
+            {isActive && <View style={styles.activeIndicator} />}
+        </TouchableOpacity>
     );
 }
 
@@ -278,6 +353,21 @@ const styles = StyleSheet.create({
         color: '#1a1a1a',
         marginBottom: 16,
     },
+    section: {
+        gap: 12,
+        marginBottom: 16,
+    },
+    sectionLabel: {
+        fontSize: 14,
+        fontWeight: '700',
+        color: '#6366f1',
+        textTransform: 'uppercase',
+        letterSpacing: 0.5,
+    },
+    emptyText: {
+        color: '#666',
+        marginBottom: 12,
+    },
     videoList: {
         gap: 12,
     },
@@ -313,6 +403,11 @@ const styles = StyleSheet.create({
     videoItemTitleActive: {
         color: '#6366f1',
     },
+    videoItemMeta: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+    },
     videoItemDescription: {
         fontSize: 13,
         color: '#666',
@@ -322,6 +417,17 @@ const styles = StyleSheet.create({
         height: 8,
         borderRadius: 4,
         backgroundColor: '#6366f1',
+    },
+    tag: {
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+        borderRadius: 6,
+        backgroundColor: '#e0e7ff',
+    },
+    tagText: {
+        fontSize: 12,
+        color: '#3730a3',
+        fontWeight: '700',
     },
     instructionsCard: {
         backgroundColor: '#fff',

@@ -37,6 +37,13 @@ export default function TabLayout() {
           tabBarIcon: ({ color }) => <IconSymbol size={28} name="play.tv.fill" color={color} />,
         }}
       />
+      <Tabs.Screen
+        name="download"
+        options={{
+          title: 'Download',
+          tabBarIcon: ({ color }) => <IconSymbol size={28} name="arrow.down.circle.fill" color={color} />,
+        }}
+      />
     </Tabs>
   );
 }
