@@ -12,6 +12,7 @@ type DownloadedVideosContextValue = {
   videos: DownloadedVideo[];
   addVideo: (video: DownloadedVideo) => void;
   refresh: () => Promise<void>;
+  removeVideo: (uri: string) => Promise<void>;
 };
 
 const VIDEO_EXTENSIONS = ['.mp4', '.mov', '.mkv', '.avi', '.webm'];
@@ -66,13 +67,31 @@ export function DownloadedVideosProvider({ children }: { children: React.ReactNo
     });
   }, []);
 
+  const removeVideo = useCallback(
+    async (uri: string) => {
+      if (!uri) {
+        return;
+      }
+
+      try {
+        await FileSystem.deleteAsync(uri, { idempotent: true });
+      } catch (error) {
+        console.warn('Failed to delete downloaded video', error);
+      } finally {
+        await refresh();
+      }
+    },
+    [refresh]
+  );
+
   const value = useMemo(
     () => ({
       videos,
       addVideo,
       refresh,
+      removeVideo,
     }),
-    [videos, addVideo, refresh]
+    [videos, addVideo, refresh, removeVideo]
   );
 
   return (
