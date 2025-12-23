@@ -285,7 +285,7 @@ class KdDownloadService : Service() {
             if (activeJobId != jobId) {
                 return
             }
-            if (call.isCanceled) {
+            if (call.isCanceled()) {
                 when {
                     cancelRequested -> cleanupAfterCancel(state)
                     pauseRequested -> updateState(
