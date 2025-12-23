@@ -4,7 +4,8 @@ import { useDownloadedVideos } from '@/hooks/useDownloadedVideos';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Network from 'expo-network';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import * as Notifications from 'expo-notifications';
 
 type ConnectionPreference = 'any' | 'wifi';
 type DownloadStatus = 'idle' | 'downloading' | 'paused' | 'completed' | 'error';
@@ -21,7 +22,7 @@ type SavedDownloadSnapshot = {
 };
 
 const DEFAULT_URL =
-  'https://sample-videos.com/video321/mp4/240/big_buck_bunny_240p_1mb.mp4';
+  'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4';
 const STORAGE_ROOT = FileSystem.documentDirectory ?? FileSystem.cacheDirectory;
 const STATE_FILE = STORAGE_ROOT ? `${STORAGE_ROOT}download-state.json` : null;
 const SETTINGS_FILE = STORAGE_ROOT ? `${STORAGE_ROOT}download-settings.json` : null;
@@ -65,11 +66,15 @@ export default function DownloadScreen() {
   const [isRestoringState, setIsRestoringState] = useState(true);
 
   const defaultDownloadOptions = useMemo<FileSystem.DownloadOptions>(
-    () => ({
-      sessionType: FileSystem.FileSystemSessionType.BACKGROUND,
-    }),
-    []
-  );
+  () => ({
+    sessionType: FileSystem.FileSystemSessionType.BACKGROUND,
+    notification: {
+      title: 'Downloading video',
+      body: 'Please wait...',
+    },
+  }),
+  []
+);
 
   const downloadResumableRef = useRef<FileSystem.DownloadResumable | null>(null);
   const savedSnapshotRef = useRef<SavedDownloadSnapshot | null>(null);
@@ -77,6 +82,35 @@ export default function DownloadScreen() {
   const hasRestoredRef = useRef(false);
 
   const { addVideo, refresh, removeVideo } = useDownloadedVideos();
+
+  useEffect(() => {
+    if (Platform.OS !== 'android') {
+      return;
+    }
+
+    const requestNotificationPermission = async () => {
+      try {
+        const { status: existingStatus } = await Notifications.getPermissionsAsync();
+        let finalStatus = existingStatus;
+
+        if (existingStatus !== 'granted') {
+          const { status } = await Notifications.requestPermissionsAsync();
+          finalStatus = status;
+        }
+
+        if (finalStatus !== 'granted') {
+          Alert.alert(
+            'Attention',
+            'Without notifications, background downloads may be interrupted by the Android system.'
+          );
+        }
+      } catch (error) {
+        console.warn('Failed to request notification permissions', error);
+      }
+    };
+
+    void requestNotificationPermission();
+  }, []);
 
   const handleProgress = useCallback((data: FileSystem.DownloadProgressData) => {
     const ratio =
