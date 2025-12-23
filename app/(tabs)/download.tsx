@@ -1,32 +1,23 @@
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useDownloadedVideos } from '@/hooks/useDownloadedVideos';
+import {
+  cancelDownload,
+  getDownloadState,
+  pauseDownload,
+  resumeDownload,
+  startDownload,
+  subscribeToDownloadUpdates,
+  type DownloadState,
+  type DownloadStatus,
+} from '@/native/kdDownload';
 import * as FileSystem from 'expo-file-system/legacy';
-import * as Network from 'expo-network';
 import * as Notifications from 'expo-notifications';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Alert, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
-
-type ConnectionPreference = 'any' | 'wifi';
-type DownloadStatus = 'idle' | 'downloading' | 'paused' | 'completed' | 'error';
-
-type SavedDownloadSnapshot = {
-  url: string;
-  fileUri: string;
-  options: FileSystem.DownloadOptions;
-  resumeData?: string | null;
-  progress?: number;
-  status?: DownloadStatus;
-  bytesWritten?: number;
-  totalBytes?: number;
-};
 
 const DEFAULT_URL =
   'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4';
-const STORAGE_ROOT = FileSystem.documentDirectory ?? FileSystem.cacheDirectory;
-const STATE_FILE = STORAGE_ROOT ? `${STORAGE_ROOT}download-state.json` : null;
-const SETTINGS_FILE = STORAGE_ROOT ? `${STORAGE_ROOT}download-settings.json` : null;
-const PROGRESS_SAVE_STEP = 0.02;
 
 const formatBytes = (value?: number) => {
   if (!value || Number.isNaN(value)) {
@@ -61,28 +52,7 @@ export default function DownloadScreen() {
   const [totalBytes, setTotalBytes] = useState<number | undefined>();
   const [localPath, setLocalPath] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [connectionPreference, setConnectionPreference] =
-    useState<ConnectionPreference>('any');
-  const [isRestoringState, setIsRestoringState] = useState(true);
-
-  const defaultDownloadOptions = useMemo<FileSystem.DownloadOptions>(
-    () => ({
-      sessionType: FileSystem.FileSystemSessionType.BACKGROUND,
-      notification: {
-        title: 'Downloading video',
-        body: 'Please wait...',
-        android: {
-          channelId: 'downloads',
-        },
-      },
-    }),
-    []
-  );
-
-  const downloadResumableRef = useRef<FileSystem.DownloadResumable | null>(null);
-  const savedSnapshotRef = useRef<SavedDownloadSnapshot | null>(null);
-  const lastPersistedProgressRef = useRef(0);
-  const hasRestoredRef = useRef(false);
+  const [isHydrating, setIsHydrating] = useState(true);
 
   const { addVideo, refresh, removeVideo } = useDownloadedVideos();
 
@@ -91,22 +61,7 @@ export default function DownloadScreen() {
       return;
     }
 
-    const ensureChannel = async () => {
-      try {
-        await Notifications.setNotificationChannelAsync('downloads', {
-          name: 'Downloads',
-          importance: Notifications.AndroidImportance.DEFAULT,
-          sound: null,
-          vibrationPattern: [0],
-          lockscreenVisibility: Notifications.AndroidNotificationVisibility.PRIVATE,
-        });
-      } catch (error) {
-        console.warn('Failed to create notification channel', error);
-      }
-    };
-
     const requestNotificationPermission = async () => {
-      
       try {
         const { status: existingStatus } = await Notifications.getPermissionsAsync();
         let finalStatus = existingStatus;
@@ -127,342 +82,126 @@ export default function DownloadScreen() {
       }
     };
 
-    void (async () => {
-      await ensureChannel();
-      await requestNotificationPermission();
-    })();
+    void requestNotificationPermission();
   }, []);
 
-  const handleProgress = useCallback((data: FileSystem.DownloadProgressData) => {
-    const ratio =
-      data.totalBytesExpectedToWrite > 0
-        ? data.totalBytesWritten / data.totalBytesExpectedToWrite
-        : 0;
-
-    setProgress(ratio);
-    setBytesWritten(data.totalBytesWritten);
-    setTotalBytes(data.totalBytesExpectedToWrite);
-    setStatus('downloading');
-  }, []);
-
-  const buildSnapshot = useCallback(
-    (overrides?: Partial<SavedDownloadSnapshot>): SavedDownloadSnapshot | null => {
-      const base =
-        downloadResumableRef.current?.savable() ??
-        savedSnapshotRef.current;
-
-      if (!base) {
-        return null;
-      }
-
-      const payload: SavedDownloadSnapshot = {
-        ...base,
-        progress,
-        status,
-        bytesWritten,
-        totalBytes,
-        ...overrides,
-      };
-
-      savedSnapshotRef.current = payload;
-      return payload;
-    },
-    [bytesWritten, progress, status, totalBytes]
-  );
-
-  const persistSnapshot = useCallback(
-    async (overrides?: Partial<SavedDownloadSnapshot>) => {
-      if (!STATE_FILE) {
-        return;
-      }
-
-      const payload = buildSnapshot(overrides);
-      if (!payload) {
-        return;
-      }
-
-      try {
-        await FileSystem.writeAsStringAsync(STATE_FILE, JSON.stringify(payload));
-        lastPersistedProgressRef.current = payload.progress ?? lastPersistedProgressRef.current;
-      } catch (error) {
-        console.warn('Failed to persist download state', error);
-      }
-    },
-    [buildSnapshot]
-  );
-
-  const clearPersistedState = useCallback(async () => {
-    if (STATE_FILE) {
-      try {
-        await FileSystem.deleteAsync(STATE_FILE, { idempotent: true });
-      } catch (error) {
-        console.warn('Failed to clear persisted download state', error);
-      }
-    }
-
-    savedSnapshotRef.current = null;
-    lastPersistedProgressRef.current = 0;
-  }, []);
-
-  const ensureNetworkAllowed = useCallback(async () => {
-    const state = await Network.getNetworkStateAsync();
-
-    if (!state.isConnected || state.isInternetReachable === false) {
-      throw new Error('No internet connection');
-    }
-
-    if (connectionPreference === 'wifi' && state.type !== Network.NetworkStateType.WIFI) {
-      throw new Error('Downloads allowed on Wi-Fi only');
-    }
-  }, [connectionPreference]);
-
-  const persistSettings = useCallback(async (preference: ConnectionPreference) => {
-    if (!SETTINGS_FILE) {
+  const applyState = useCallback((state?: DownloadState | null) => {
+    if (!state) {
       return;
     }
 
-    try {
-      await FileSystem.writeAsStringAsync(
-        SETTINGS_FILE,
-        JSON.stringify({ connectionPreference: preference })
-      );
-    } catch (error) {
-      console.warn('Failed to persist download settings', error);
-    }
+    const downloaded = typeof state.downloadedBytes === 'number' ? state.downloadedBytes : 0;
+    const total = typeof state.totalBytes === 'number' ? state.totalBytes : 0;
+    const resolvedProgress =
+      state.status === 'completed'
+        ? 1
+        : typeof state.progress === 'number'
+          ? state.progress
+          : total > 0
+            ? downloaded / total
+            : 0;
+
+    setStatus(state.status ?? 'idle');
+    setProgress(resolvedProgress);
+    setBytesWritten(downloaded || undefined);
+    setTotalBytes(total || undefined);
+    setLocalPath(state.status === 'completed' ? state.fileUri ?? null : null);
+    setErrorMessage(state.error ?? null);
   }, []);
 
   useEffect(() => {
-    if (!isRestoringState) {
-      void persistSettings(connectionPreference);
-    }
-  }, [connectionPreference, persistSettings, isRestoringState]);
+    let isMounted = true;
 
-  const createResumable = useCallback(
-    (
-      targetUrl: string,
-      targetUri: string,
-      resumeData?: string | null,
-      options?: FileSystem.DownloadOptions
-    ) =>
-      FileSystem.createDownloadResumable(
-        targetUrl,
-        targetUri,
-        options ?? defaultDownloadOptions,
-        handleProgress,
-        resumeData ?? undefined
-      ),
-    [defaultDownloadOptions, handleProgress]
-  );
-
-  const handleDownloadError = useCallback(
-    async (error: unknown, silent = false) => {
-      console.error('Download failed', error);
-      const message = error instanceof Error ? error.message : 'Download failed';
-      setErrorMessage(message);
-      setStatus('error');
-      await persistSnapshot({ status: 'error' });
-
-      if (!silent) {
-        Alert.alert('Download error', message);
+    const hydrate = async () => {
+      try {
+        const state = await getDownloadState();
+        if (isMounted) {
+          applyState(state);
+        }
+      } finally {
+        if (isMounted) {
+          setIsHydrating(false);
+        }
       }
-    },
-    [persistSnapshot]
-  );
+    };
 
-  const handleCompletion = useCallback(
-    async (result: FileSystem.FileSystemDownloadResult, silent = false) => {
-      setStatus('completed');
-      setProgress(1);
-      setLocalPath(result.uri);
+    void hydrate();
 
-      savedSnapshotRef.current = buildSnapshot({
-        progress: 1,
-        status: 'completed',
-        resumeData: null,
-        fileUri: result.uri,
-      });
+    return () => {
+      isMounted = false;
+    };
+  }, [applyState]);
 
-      await persistSnapshot({
-        progress: 1,
-        status: 'completed',
-        resumeData: null,
-        fileUri: result.uri,
-      });
-
-      const filename = result.uri.split('/').pop() ?? 'download.mp4';
-      addVideo({ id: result.uri, uri: result.uri, filename });
-      void refresh();
-
-      if (!silent) {
-        Alert.alert('Success', `File saved to: ${result.uri}`);
+  useEffect(() => {
+    const subscription = subscribeToDownloadUpdates((state) => {
+      applyState(state);
+      if (state.status === 'completed' && state.fileUri) {
+        const filename = state.fileUri.split('/').pop() ?? 'download.mp4';
+        addVideo({ id: state.fileUri, uri: state.fileUri, filename });
+        void refresh();
       }
-    },
-    [addVideo, buildSnapshot, persistSnapshot, refresh]
-  );
+    });
 
-  const startDownload = useCallback(async () => {
+    return () => {
+      subscription?.remove();
+    };
+  }, [addVideo, applyState, refresh]);
+
+  const handleDownloadError = useCallback((error: unknown) => {
+    const message = error instanceof Error ? error.message : 'Download failed';
+    setStatus('error');
+    setErrorMessage(message);
+    Alert.alert('Download error', message);
+  }, []);
+
+  const startHandler = useCallback(async () => {
     if (!url) {
       Alert.alert('Error', 'Enter a file URL');
       return;
     }
 
-    try {
-      await ensureNetworkAllowed();
-    } catch (error) {
-      await handleDownloadError(error, true);
-      if (error instanceof Error) {
-        Alert.alert('Network unavailable', error.message);
-      }
-      return;
-    }
-
-    const baseDir = FileSystem.documentDirectory;
-    if (!baseDir) {
-      Alert.alert('Error', 'Local storage is not available on this platform.');
-      return;
-    }
-
-    const filename = filenameFromUrl(url);
-    const targetUri = `${baseDir}${filename}`;
-
     setStatus('downloading');
     setProgress(0);
-    setBytesWritten(0);
+    setBytesWritten(undefined);
+    setTotalBytes(undefined);
+    setErrorMessage(null);
+
+    try {
+      await startDownload(url, filenameFromUrl(url));
+    } catch (error) {
+      handleDownloadError(error);
+    }
+  }, [handleDownloadError, url]);
+
+  const resumeHandler = useCallback(async () => {
+    try {
+      setStatus('downloading');
+      setErrorMessage(null);
+      resumeDownload();
+    } catch (error) {
+      handleDownloadError(error);
+    }
+  }, [handleDownloadError]);
+
+  const pauseHandler = useCallback(() => {
+    pauseDownload();
+    setStatus('paused');
+  }, []);
+
+  const resetLocalState = useCallback(() => {
+    setStatus('idle');
+    setProgress(0);
+    setBytesWritten(undefined);
     setTotalBytes(undefined);
     setLocalPath(null);
     setErrorMessage(null);
+  }, []);
 
-    downloadResumableRef.current = createResumable(url, targetUri);
-    savedSnapshotRef.current = downloadResumableRef.current.savable();
-
-    await persistSnapshot({
-      status: 'downloading',
-      progress: 0,
-      fileUri: targetUri,
-      url,
-    });
-
-    try {
-      const result = await downloadResumableRef.current.downloadAsync();
-      if (result) {
-        await handleCompletion(result);
-      }
-    } catch (error) {
-      await handleDownloadError(error);
-    }
-  }, [createResumable, ensureNetworkAllowed, handleCompletion, handleDownloadError, persistSnapshot, url]);
-
-  const resumeDownload = useCallback(
-    async (autoStart = false) => {
-      try {
-        await ensureNetworkAllowed();
-      } catch (error) {
-        await handleDownloadError(error, true);
-        if (!autoStart && error instanceof Error) {
-          Alert.alert('Network unavailable', error.message);
-        }
-        return;
-      }
-
-      const baseDir = FileSystem.documentDirectory;
-      if (!baseDir) {
-        Alert.alert('Error', 'Local storage is not available on this platform.');
-        return;
-      }
-
-      const snapshot = savedSnapshotRef.current;
-      const resumeUrl = snapshot?.url ?? url;
-      const filename = snapshot?.fileUri?.split('/').pop() ?? filenameFromUrl(resumeUrl);
-      const targetUri = snapshot?.fileUri ?? `${baseDir}${filename}`;
-      const resumeData = snapshot?.resumeData ?? null;
-      const options = snapshot?.options ?? defaultDownloadOptions;
-
-      setStatus('downloading');
-      setErrorMessage(null);
-
-      downloadResumableRef.current = createResumable(resumeUrl, targetUri, resumeData, options);
-      savedSnapshotRef.current = downloadResumableRef.current.savable();
-
-      await persistSnapshot({
-        status: 'downloading',
-        fileUri: targetUri,
-        url: resumeUrl,
-      });
-
-      try {
-        const result = resumeData
-          ? await downloadResumableRef.current.resumeAsync()
-          : await downloadResumableRef.current.downloadAsync();
-
-        if (result) {
-          await handleCompletion(result, autoStart);
-        }
-      } catch (error) {
-        await handleDownloadError(error, autoStart);
-      }
-    },
-    [
-      createResumable,
-      defaultDownloadOptions,
-      ensureNetworkAllowed,
-      handleCompletion,
-      handleDownloadError,
-      persistSnapshot,
-      url,
-    ]
-  );
-
-  const pauseDownload = useCallback(async () => {
-    if (!downloadResumableRef.current) {
-      return;
-    }
-
-    try {
-      const pausedState = await downloadResumableRef.current.pauseAsync();
-      setStatus('paused');
-
-      const resumeData = pausedState?.resumeData ?? savedSnapshotRef.current?.resumeData ?? null;
-      savedSnapshotRef.current = buildSnapshot({ status: 'paused', resumeData });
-
-      await persistSnapshot({
-        status: 'paused',
-        resumeData,
-      });
-    } catch (error) {
-      console.warn('Failed to pause download', error);
-    }
-  }, [buildSnapshot, persistSnapshot]);
-
-  const stopAndDelete = useCallback(async () => {
-    const targetUri =
-      savedSnapshotRef.current?.fileUri ??
-      downloadResumableRef.current?.savable()?.fileUri;
-
-    if (downloadResumableRef.current) {
-      try {
-        await downloadResumableRef.current.pauseAsync();
-      } catch {
-        // no-op if pause fails
-      }
-    }
-
-    try {
-      if (targetUri) {
-        await FileSystem.deleteAsync(targetUri, { idempotent: true });
-        await removeVideo(targetUri);
-      }
-    } catch (error) {
-      console.warn('Failed to delete file', error);
-    } finally {
-      setStatus('idle');
-      setProgress(0);
-      setBytesWritten(undefined);
-      setTotalBytes(undefined);
-      setLocalPath(null);
-      downloadResumableRef.current = null;
-      await clearPersistedState();
-    }
-  }, [clearPersistedState, removeVideo]);
+  const cancelHandler = useCallback(() => {
+    cancelDownload();
+    resetLocalState();
+    void refresh();
+  }, [refresh, resetLocalState]);
 
   const deleteCompletedFile = useCallback(async () => {
     if (!localPath) {
@@ -477,97 +216,9 @@ export default function DownloadScreen() {
       console.warn('Failed to remove downloaded file', error);
       Alert.alert('Error', 'Failed to delete the file');
     } finally {
-      setStatus('idle');
-      setProgress(0);
-      setBytesWritten(undefined);
-      setTotalBytes(undefined);
-      setLocalPath(null);
-      downloadResumableRef.current = null;
-      await clearPersistedState();
+      resetLocalState();
     }
-  }, [clearPersistedState, localPath, removeVideo]);
-
-  useEffect(() => {
-    if (status === 'downloading' && progress - lastPersistedProgressRef.current >= PROGRESS_SAVE_STEP) {
-      void persistSnapshot();
-    }
-  }, [persistSnapshot, progress, status]);
-
-  useEffect(() => {
-    if (hasRestoredRef.current) {
-      return;
-    }
-
-    hasRestoredRef.current = true;
-
-    let isMounted = true;
-
-    const restoreState = async () => {
-      if (!STORAGE_ROOT) {
-        setIsRestoringState(false);
-        return;
-      }
-
-      try {
-        if (SETTINGS_FILE) {
-          const settingsRaw = await FileSystem.readAsStringAsync(SETTINGS_FILE);
-          const savedSettings = JSON.parse(settingsRaw);
-          if (
-            savedSettings.connectionPreference === 'wifi' ||
-            savedSettings.connectionPreference === 'any'
-          ) {
-            setConnectionPreference(savedSettings.connectionPreference);
-          }
-        }
-      } catch (error) {
-        console.warn('Failed to restore download settings', error);
-      }
-
-      try {
-        if (STATE_FILE) {
-          const raw = await FileSystem.readAsStringAsync(STATE_FILE);
-          const saved: SavedDownloadSnapshot = JSON.parse(raw);
-
-          savedSnapshotRef.current = saved;
-          setUrl(saved.url || DEFAULT_URL);
-          setProgress(saved.progress ?? 0);
-          setBytesWritten(saved.bytesWritten);
-          setTotalBytes(saved.totalBytes);
-          setStatus(saved.status ?? 'paused');
-          lastPersistedProgressRef.current = saved.progress ?? 0;
-
-          if (saved.status === 'completed') {
-            setLocalPath(saved.fileUri);
-          }
-
-          if (saved.url && saved.fileUri) {
-            downloadResumableRef.current = createResumable(
-              saved.url,
-              saved.fileUri,
-              saved.resumeData,
-              saved.options
-            );
-
-            if (saved.status === 'downloading' || saved.status === 'paused') {
-              await resumeDownload(true);
-            }
-          }
-        }
-      } catch (error) {
-        console.warn('Failed to restore download state', error);
-      } finally {
-        if (isMounted) {
-          setIsRestoringState(false);
-        }
-      }
-    };
-
-    void restoreState();
-
-    return () => {
-      isMounted = false;
-    };
-  }, [createResumable, resumeDownload]);
+  }, [localPath, removeVideo, resetLocalState]);
 
   const progressPercent = (progress * 100).toFixed(1);
   const statusLabel: string = {
@@ -581,12 +232,14 @@ export default function DownloadScreen() {
   const primaryButtonLabel =
     status === 'paused'
       ? 'Resume download'
-      : status === 'downloading'
-        ? 'Downloading...'
-        : 'Start download';
+      : status === 'error'
+        ? 'Retry download'
+        : status === 'downloading'
+          ? 'Downloading...'
+          : 'Start download';
 
-  const primaryAction = status === 'paused' ? resumeDownload : startDownload;
-  const disablePrimary = status === 'downloading' || isRestoringState;
+  const primaryAction = status === 'paused' || status === 'error' ? resumeHandler : startHandler;
+  const disablePrimary = status === 'downloading' || isHydrating;
 
   const showDeleteButton = status === 'completed' && !!localPath;
 
@@ -618,18 +271,15 @@ export default function DownloadScreen() {
             <Text style={styles.buttonText}>{primaryButtonLabel}</Text>
           </Pressable>
           <Pressable
-            style={[
-              styles.button,
-              status !== 'downloading' && styles.buttonDisabled,
-            ]}
-            onPress={() => void pauseDownload()}
+            style={[styles.button, status !== 'downloading' && styles.buttonDisabled]}
+            onPress={pauseHandler}
             disabled={status !== 'downloading'}
           >
             <Text style={styles.buttonText}>Pause</Text>
           </Pressable>
           <Pressable
             style={[styles.button, styles.buttonDanger, status === 'idle' && styles.buttonDisabled]}
-            onPress={() => void stopAndDelete()}
+            onPress={cancelHandler}
             disabled={status === 'idle'}
           >
             <Text style={styles.buttonText}>Stop & delete</Text>
@@ -648,7 +298,7 @@ export default function DownloadScreen() {
         <Text style={styles.statusText}>
           {statusLabel}
           {bytesWritten && totalBytes
-            ? ` • ${formatBytes(bytesWritten)} / ${formatBytes(totalBytes)}`
+            ? ` - ${formatBytes(bytesWritten)} / ${formatBytes(totalBytes)}`
             : ''}
         </Text>
         {errorMessage && <Text style={styles.errorText}>{errorMessage}</Text>}
@@ -666,34 +316,6 @@ export default function DownloadScreen() {
             <Text style={styles.buttonText}>Delete downloaded file</Text>
           </Pressable>
         )}
-      </View>
-
-      <View style={styles.card}>
-        <ThemedText type="defaultSemiBold" style={styles.label}>
-          Connection preference
-        </ThemedText>
-        <View style={styles.segment}>
-          {(['any', 'wifi'] as ConnectionPreference[]).map((option) => {
-            const isActive = connectionPreference === option;
-            return (
-              <Pressable
-                key={option}
-                style={[styles.segmentItem, isActive && styles.segmentItemActive]}
-                onPress={() => setConnectionPreference(option)}
-              >
-                <Text style={[styles.segmentText, isActive && styles.segmentTextActive]}>
-                  {option === 'any' ? 'Any network' : 'Wi-Fi only'}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
-        <Text style={styles.helperText}>
-          When Wi-Fi only is selected, downloads are blocked on mobile data.
-        </Text>
-        <Text style={styles.helperText}>
-          The download uses a BACKGROUND session so it can continue within OS limits and will try to resume when the app opens.
-        </Text>
       </View>
     </ThemedView>
   );
@@ -787,35 +409,6 @@ const styles = StyleSheet.create({
   pathText: {
     color: '#9ca3af',
     fontSize: 12,
-  },
-  segment: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  segmentItem: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 10,
-    backgroundColor: '#0b0d14',
-    borderWidth: 1,
-    borderColor: '#24283a',
-    alignItems: 'center',
-  },
-  segmentItemActive: {
-    backgroundColor: '#1f6feb33',
-    borderColor: '#3b82f6',
-  },
-  segmentText: {
-    color: '#9ca3af',
-    fontWeight: '600',
-  },
-  segmentTextActive: {
-    color: '#e5e7eb',
-  },
-  helperText: {
-    color: '#9ca3af',
-    fontSize: 12,
-    lineHeight: 18,
   },
   fullWidthButton: {
     width: '100%',
