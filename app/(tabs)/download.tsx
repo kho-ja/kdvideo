@@ -106,6 +106,7 @@ export default function DownloadScreen() {
     };
 
     const requestNotificationPermission = async () => {
+      
       try {
         const { status: existingStatus } = await Notifications.getPermissionsAsync();
         let finalStatus = existingStatus;
