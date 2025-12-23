@@ -3,9 +3,9 @@ import { ThemedView } from '@/components/themed-view';
 import { useDownloadedVideos } from '@/hooks/useDownloadedVideos';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Network from 'expo-network';
+import * as Notifications from 'expo-notifications';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
-import * as Notifications from 'expo-notifications';
 
 type ConnectionPreference = 'any' | 'wifi';
 type DownloadStatus = 'idle' | 'downloading' | 'paused' | 'completed' | 'error';
@@ -66,15 +66,18 @@ export default function DownloadScreen() {
   const [isRestoringState, setIsRestoringState] = useState(true);
 
   const defaultDownloadOptions = useMemo<FileSystem.DownloadOptions>(
-  () => ({
-    sessionType: FileSystem.FileSystemSessionType.BACKGROUND,
-    notification: {
-      title: 'Downloading video',
-      body: 'Please wait...',
-    },
-  }),
-  []
-);
+    () => ({
+      sessionType: FileSystem.FileSystemSessionType.BACKGROUND,
+      notification: {
+        title: 'Downloading video',
+        body: 'Please wait...',
+        android: {
+          channelId: 'downloads',
+        },
+      },
+    }),
+    []
+  );
 
   const downloadResumableRef = useRef<FileSystem.DownloadResumable | null>(null);
   const savedSnapshotRef = useRef<SavedDownloadSnapshot | null>(null);
@@ -87,6 +90,20 @@ export default function DownloadScreen() {
     if (Platform.OS !== 'android') {
       return;
     }
+
+    const ensureChannel = async () => {
+      try {
+        await Notifications.setNotificationChannelAsync('downloads', {
+          name: 'Downloads',
+          importance: Notifications.AndroidImportance.DEFAULT,
+          sound: null,
+          vibrationPattern: [0],
+          lockscreenVisibility: Notifications.AndroidNotificationVisibility.PRIVATE,
+        });
+      } catch (error) {
+        console.warn('Failed to create notification channel', error);
+      }
+    };
 
     const requestNotificationPermission = async () => {
       try {
@@ -109,7 +126,10 @@ export default function DownloadScreen() {
       }
     };
 
-    void requestNotificationPermission();
+    void (async () => {
+      await ensureChannel();
+      await requestNotificationPermission();
+    })();
   }, []);
 
   const handleProgress = useCallback((data: FileSystem.DownloadProgressData) => {
