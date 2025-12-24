@@ -14,6 +14,16 @@
     },
     "android": {
       "package": "com.kdvideo.app",
+      "permissions": [
+        "INTERNET",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_DATA_SYNC",
+        "POST_NOTIFICATIONS"
+      ],
+      "foregroundService": {
+        "notificationTitle": "KDVideo is downloading",
+        "notificationText": "Download is running in the background"
+      },
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
