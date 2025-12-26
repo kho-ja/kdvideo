@@ -221,25 +221,30 @@ export default function DownloadScreen() {
   }, [localPath, removeVideo, resetLocalState]);
 
   const progressPercent = (progress * 100).toFixed(1);
-  const statusLabel: string = {
-    idle: 'Idle',
-    downloading: 'Downloading',
-    paused: 'Paused',
-    completed: 'Done',
-    error: 'Error',
-  }[status];
+  const statusLabel =
+    {
+      idle: 'Idle',
+      queued: 'Queued',
+      downloading: 'Downloading',
+      paused: 'Paused',
+      completed: 'Done',
+      failed: 'Failed',
+      canceled: 'Canceled',
+      error: 'Error',
+    }[status] ?? 'Idle';
 
   const primaryButtonLabel =
     status === 'paused'
       ? 'Resume download'
-      : status === 'error'
+      : status === 'error' || status === 'failed'
         ? 'Retry download'
-        : status === 'downloading'
+        : status === 'downloading' || status === 'queued'
           ? 'Downloading...'
           : 'Start download';
 
-  const primaryAction = status === 'paused' || status === 'error' ? resumeHandler : startHandler;
-  const disablePrimary = status === 'downloading' || isHydrating;
+  const primaryAction =
+    status === 'paused' || status === 'error' || status === 'failed' ? resumeHandler : startHandler;
+  const disablePrimary = status === 'downloading' || status === 'queued' || isHydrating;
 
   const showDeleteButton = status === 'completed' && !!localPath;
 
@@ -271,16 +276,23 @@ export default function DownloadScreen() {
             <Text style={styles.buttonText}>{primaryButtonLabel}</Text>
           </Pressable>
           <Pressable
-            style={[styles.button, status !== 'downloading' && styles.buttonDisabled]}
+            style={[
+              styles.button,
+              status !== 'downloading' && status !== 'queued' && styles.buttonDisabled,
+            ]}
             onPress={pauseHandler}
-            disabled={status !== 'downloading'}
+            disabled={status !== 'downloading' && status !== 'queued'}
           >
             <Text style={styles.buttonText}>Pause</Text>
           </Pressable>
           <Pressable
-            style={[styles.button, styles.buttonDanger, status === 'idle' && styles.buttonDisabled]}
+            style={[
+              styles.button,
+              styles.buttonDanger,
+              (status === 'idle' || status === 'canceled') && styles.buttonDisabled,
+            ]}
             onPress={cancelHandler}
-            disabled={status === 'idle'}
+            disabled={status === 'idle' || status === 'canceled'}
           >
             <Text style={styles.buttonText}>Stop & delete</Text>
           </Pressable>

@@ -1,6 +1,14 @@
 import { NativeEventEmitter, NativeModules, Platform, type NativeModule } from 'react-native';
 
-export type DownloadStatus = 'idle' | 'downloading' | 'paused' | 'completed' | 'error';
+export type DownloadStatus =
+  | 'idle'
+  | 'queued'
+  | 'downloading'
+  | 'paused'
+  | 'completed'
+  | 'failed'
+  | 'canceled'
+  | 'error';
 
 export type DownloadState = {
   status: DownloadStatus;
@@ -12,7 +20,7 @@ export type DownloadState = {
   error?: string;
 };
 
-type KdDownloadModuleType = {
+type KdDownloadModuleType = NativeModule & {
   startDownload: (url: string, fileName?: string | null) => Promise<string | null>;
   pauseDownload: () => void;
   resumeDownload: () => void;
@@ -22,7 +30,9 @@ type KdDownloadModuleType = {
 };
 
 const moduleInstance = NativeModules.KdDownloadModule as KdDownloadModuleType | undefined;
-const emitter = moduleInstance ? new NativeEventEmitter(moduleInstance as NativeModule) : null;
+const emitter = moduleInstance ? new NativeEventEmitter(moduleInstance) : null;
+
+const isSupportedPlatform = Platform.OS === 'android' || Platform.OS === 'ios';
 
 const requireModule = () => {
   if (!moduleInstance) {
@@ -32,42 +42,42 @@ const requireModule = () => {
 };
 
 export const startDownload = async (url: string, fileName?: string) => {
-  if (Platform.OS !== 'android') {
-    throw new Error('Download service is only available on Android');
+  if (!isSupportedPlatform) {
+    throw new Error('Download service is only available on Android and iOS');
   }
   return requireModule().startDownload(url, fileName ?? null);
 };
 
 export const pauseDownload = () => {
-  if (Platform.OS !== 'android' || !moduleInstance) {
+  if (!isSupportedPlatform || !moduleInstance) {
     return;
   }
   moduleInstance.pauseDownload();
 };
 
 export const resumeDownload = () => {
-  if (Platform.OS !== 'android' || !moduleInstance) {
+  if (!isSupportedPlatform || !moduleInstance) {
     return;
   }
   moduleInstance.resumeDownload();
 };
 
 export const cancelDownload = () => {
-  if (Platform.OS !== 'android' || !moduleInstance) {
+  if (!isSupportedPlatform || !moduleInstance) {
     return;
   }
   moduleInstance.cancelDownload();
 };
 
 export const getDownloadState = async () => {
-  if (Platform.OS !== 'android' || !moduleInstance) {
+  if (!isSupportedPlatform || !moduleInstance) {
     return null;
   }
   return moduleInstance.getState();
 };
 
 export const getDownloadDirectory = async () => {
-  if (Platform.OS !== 'android' || !moduleInstance) {
+  if (!isSupportedPlatform || !moduleInstance) {
     return null;
   }
   return moduleInstance.getDownloadDirectory();
